@@ -86,10 +86,16 @@ PARALLEL=0
 THUMBS=24
 
 # 收藏数筛选阈值（只下载收藏数大于或等于该值的图片）
-MIN_FAVORITES=200
-# 图片大小限制（500KB ~ 10MB，已转换为字节单位）
-MIN_FILE_SIZE=$((500 * 1024))    # 500KB
+MIN_FAVORITES=220
+# 图片大小限制（600KB ~ 10MB，已转换为字节单位）
+MIN_FILE_SIZE=$((600 * 1024))    # 600KB
 MAX_FILE_SIZE=$((10 * 1024 * 1024)) # 10MB
+
+# 页码范围设置
+# 最小页码（不能小于1）
+MIN_PAGE=1
+# 最大页码（不能小于最小页码）
+MAX_PAGE=99
 #####################################
 ###     结束核心配置选项           ###
 #####################################
@@ -152,7 +158,7 @@ function is_favorite_ok {
 } # /is_favorite_ok
 
 #
-# 检查文件大小是否在合法范围（500KB ~ 10MB）
+# 检查文件大小是否在合法范围
 # 参数：图片的网络访问URL
 # 返回值：0（合法）/1（不合法）
 #
@@ -391,16 +397,14 @@ function helpText {
     printf "\\t\\t\\t不带 # 前缀的 RGB 十六进制值\\n"
     printf " -u, --user\\t\\t要下载其壁纸的用户账号名\\n"
     printf " -p, --parallel\\t\\t是否启用 GNU Parallel 加速下载（1=启用，0=禁用）\\n"
+    printf " --min-page\\t\\t最小页码限制（默认1）\\n"
+    printf " --max-page\\t\\t最大页码限制（默认100）\\n"
     printf " -v, --version\\t\\t显示当前脚本版本号\\n"
     printf " -h, --help\\t\\t显示此帮助信息并退出脚本\\n\\n"
     printf "使用示例:\\n"
     printf "./wallhaven.sh\\t-l ~/wp/ -n 48 -s 1 -t standard -c 101 -f 111"
-    printf " -r 1920x1080 \\n\\t\\t-a 16x9 -m random -o desc -p 1\\n\\n"
-    printf "该示例将下载 48 张随机壁纸，分辨率 1920x1080，宽高比 16x9，\\n保存到 ~/wp/ 目录，从第 1 页开始，分类为通用和人物，\\n包含 SFW、可疑、NSFW 内容，并使用 GNU Parallel 加速下载\\n\\n"
-    printf "./wallhaven.sh\\t-l ~/wp/ -n 48 -s 1 -t search -c 111 -f 100 -r "
-    printf "1920x1080 -a 16x9\\n\\t\\t-m relevance -o desc -q "
-    printf "'\"super mario\"' -d cc0000 -p 1\\n\\n"
-    printf "该示例将下载 48 张与 \"super mario\" 相关、包含 #cc0000 颜色的壁纸，\\n分辨率 1920x1080，宽高比 16x9，保存到 ~/wp/ 目录，从第 1 页开始，\\n分类为通用、动漫、人物，仅包含 SFW 内容，并使用 GNU Parallel 加速下载\\n\\n\\n"
+    printf " -r 1920x1080 \\n\\t\\t-a 16x9 -m random -o desc -p 1 --min-page 5 --max-page 50\\n\\n"
+    printf "该示例将下载 48 张随机壁纸，分辨率 1920x1080，宽高比 16x9，\\n保存到 ~/wp/ 目录，从第 1 页开始，分类为通用和人物，\\n包含 SFW、可疑、NSFW 内容，使用 GNU Parallel 加速下载，\\n并限制只从5-50页范围内下载\\n\\n"
     printf "脚本最新版本获取地址: "
     printf "<https://github.com/macearl/Wallhaven-Downloader>\\n"
 } # /helpText
@@ -459,6 +463,12 @@ while [[ $# -ge 1 ]]
         -p|--parallel)
             PARALLEL="$2"
             shift;;
+        --min-page)
+            MIN_PAGE="$2"
+            shift;;
+        --max-page)
+            MAX_PAGE="$2"
+            shift;;
         -h|--help)
             helpText
             exit
@@ -475,6 +485,17 @@ while [[ $# -ge 1 ]]
     esac
     shift # 跳过已解析的参数或参数值
     done
+
+# 验证页码范围有效性
+if ! [[ "$MIN_PAGE" =~ ^[0-9]+$ ]] || [ "$MIN_PAGE" -lt 1 ]; then
+    printf "错误：最小页码必须是大于等于1的整数，当前值: %s\\n" "$MIN_PAGE"
+    exit 1
+fi
+
+if ! [[ "$MAX_PAGE" =~ ^[0-9]+$ ]] || [ "$MAX_PAGE" -lt "$MIN_PAGE" ]; then
+    printf "错误：最大页码必须是大于等于最小页码的整数，当前值: %s\\n" "$MAX_PAGE"
+    exit 1
+fi
 
 checkDependencies
 
@@ -515,28 +536,28 @@ then
     # 初始化随机数生成器，确保每次运行脚本的随机序列不同
     RANDOM=$$
     
-    # 先获取总页数，并将其限制在1-100页范围内
+    # 先获取总页数，并将其限制在配置的页码范围内
     page=1
     s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
     s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
     s1+="&sorting=$MODE&order=$ORDER&topRange=$TOPRANGE&colors=$COLOR"
     getPage "$s1"
     total_pages=$(jq -r ".meta.last_page" tmp)
-    # 限制最大页数为100，最小页数为1，避免超出合理范围
-    if [ "$total_pages" -gt 100 ]; then
-        total_pages=100
+    # 限制页数在配置的范围内
+    if [ "$total_pages" -gt "$MAX_PAGE" ]; then
+        total_pages="$MAX_PAGE"
     fi
-    if [ "$total_pages" -lt 1 ]; then
-        total_pages=1
+    if [ "$total_pages" -lt "$MIN_PAGE" ]; then
+        total_pages="$MIN_PAGE"
     fi
     rm -f tmp
 
     # 循环执行：直到总成功数达到目标数量，或已无更多页面可下载
     while [ $total_success -lt $WPNUMBER ] && [ "$downloadEndReached" != true ]
     do
-        # 随机选择1到总页数之间的页码，实现页面级随机下载
-        page=$((RANDOM % total_pages + 1))
-        printf "\\n===== 正在随机获取第 %s 页数据（页码范围：1-%d页）=====\\n" "$page" "$total_pages"
+        # 随机选择配置范围内的页码，实现页面级随机下载
+        page=$((RANDOM % (total_pages - MIN_PAGE + 1) + MIN_PAGE))
+        printf "\\n===== 正在随机获取第 %s 页数据（页码范围：%d-%d页）=====\\n" "$page" "$MIN_PAGE" "$total_pages"
         
         s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
         s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
@@ -559,7 +580,7 @@ then
     # 初始化随机数生成器，确保每次运行脚本的随机序列不同
     RANDOM=$$
     
-    # 先获取总页数，并将其限制在1-100页范围内
+    # 先获取总页数，并将其限制在配置的页码范围内
     page=1
     s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
     s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
@@ -571,21 +592,21 @@ then
     fi
     getPage "$s1"
     total_pages=$(jq -r ".meta.last_page" tmp)
-    # 限制最大页数为100，最小页数为1，避免超出合理范围
-    if [ "$total_pages" -gt 100 ]; then
-        total_pages=100
+    # 限制页数在配置的范围内
+    if [ "$total_pages" -gt "$MAX_PAGE" ]; then
+        total_pages="$MAX_PAGE"
     fi
-    if [ "$total_pages" -lt 1 ]; then
-        total_pages=1
+    if [ "$total_pages" -lt "$MIN_PAGE" ]; then
+        total_pages="$MIN_PAGE"
     fi
     rm -f tmp
 
     # 循环执行：直到总成功数达到目标数量，或已无更多页面可下载
     while [ $total_success -lt $WPNUMBER ] && [ "$downloadEndReached" != true ]
     do
-        # 随机选择1到总页数之间的页码，实现页面级随机下载
-        page=$((RANDOM % total_pages + 1))
-        printf "\\n===== 正在随机获取第 %s 页数据（页码范围：1-%d页）=====\\n" "$page" "$total_pages"
+        # 随机选择配置范围内的页码，实现页面级随机下载
+        page=$((RANDOM % (total_pages - MIN_PAGE + 1) + MIN_PAGE))
+        printf "\\n===== 正在随机获取第 %s 页数据（页码范围：%d-%d页）=====\\n" "$page" "$MIN_PAGE" "$total_pages"
         
         s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
         s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
@@ -645,25 +666,25 @@ then
     # 初始化随机数生成器，确保每次运行脚本的随机序列不同
     RANDOM=$$
     
-    # 先获取收藏集总页数，并将其限制在1-100页范围内
+    # 先获取收藏集总页数，并将其限制在配置的页码范围内
     page=1
     getPage "collections/$USR/$id?page=$page"
     total_pages=$(jq -r ".meta.last_page" tmp)
-    # 限制最大页数为100，最小页数为1，避免超出合理范围
-    if [ "$total_pages" -gt 100 ]; then
-        total_pages=100
+    # 限制页数在配置的范围内
+    if [ "$total_pages" -gt "$MAX_PAGE" ]; then
+        total_pages="$MAX_PAGE"
     fi
-    if [ "$total_pages" -lt 1 ]; then
-        total_pages=1
+    if [ "$total_pages" -lt "$MIN_PAGE" ]; then
+        total_pages="$MIN_PAGE"
     fi
     rm -f tmp
 
     # 循环执行：直到总成功数达到目标数量、收藏集图片耗尽，或已无更多页面可下载
     while [ $total_success -lt $WPNUMBER ] && [ $total_success -lt $collectionsize ] && [ "$downloadEndReached" != true ]
     do
-        # 随机选择1到总页数之间的页码，实现收藏集页面级随机下载
-        page=$((RANDOM % total_pages + 1))
-        printf "\\n===== 正在随机获取收藏集第 %s 页数据（页码范围：1-%d页）=====\\n" "$page" "$total_pages"
+        # 随机选择配置范围内的页码，实现收藏集页面级随机下载
+        page=$((RANDOM % (total_pages - MIN_PAGE + 1) + MIN_PAGE))
+        printf "\\n===== 正在随机获取收藏集第 %s 页数据（页码范围：%d-%d页）=====\\n" "$page" "$MIN_PAGE" "$total_pages"
         
         getPage "collections/$USR/$id?page=$page"
         printf "\\t- 收藏集第 %s 页数据获取完成!\\n" "$page"
