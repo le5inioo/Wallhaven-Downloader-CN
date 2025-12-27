@@ -13,7 +13,7 @@ REVISION=0.2.6
 #####################################
 # Enter your API key
 # you can get it here: https://wallhaven.cc/settings/account
-APIKEY=" "
+APIKEY=""
 #####################################
 ### End needed for NSFW/Favorites ###
 #####################################
@@ -22,9 +22,10 @@ APIKEY=" "
 ###     Configuration Options     ###
 #####################################
 # Where should the Wallpapers be stored?
-LOCATION=/vol2/1000/Media/Wallhaven
-# How many Wallpapers should be downloaded (最终要拿到的达标图片数量)
-WPNUMBER=24
+LOCATION=/location/to/your/wallpaper/folder
+# How many Wallpapers should be downloaded, should be multiples of the
+# value in the THUMBS Variable
+WPNUMBER=48
 # What page to start downloading at, default and minimum of 1.
 STARTPAGE=1
 # Type standard (newest, oldest, random, hits, mostfav), search, collections
@@ -38,7 +39,7 @@ CATEGORIES=111
 # filter wallpapers before downloading, first number is for sfw content,
 # second for sketchy content, third for nsfw content, 1 to enable,
 # 0 to disable
-FILTER=100
+FILTER=110
 # Which Resolutions should be downloaded, leave empty for all (most common
 # resolutions possible, for details see wallhaven site), separate multiple
 # resolutions with , eg. 1920x1080,1920x1200
@@ -47,14 +48,14 @@ RESOLUTION=
 # both resolutions and a minimum resolution will result in the desired
 # resolutions being ignored, to avoid unwanted behavior only set one of the
 # two options and leave the other blank
-ATLEAST=1920x1080
+ATLEAST=
 # Which aspectratios should be downloaded, leave empty for all (possible
 # values: 4x3, 5x4, 16x9, 16x10, 21x9, 32x9, 48x9, 9x16, 10x16), separate mutliple ratios
 # with , eg. 4x3,16x9
-ASPECTRATIO=16x9,16x10,21x9
+ASPECTRATIO=
 # Which Type should be displayed (relevance, random, date_added, views,
 # favorites, toplist, toplist-beta)
-MODE=favorites
+MODE=random
 # if MODE is set to toplist show the toplist for the given timeframe
 # possible values: 1d (last day), 3d (last 3 days), 1w (last week),
 # 1M (last month), 3M (last 3 months), 6M (last 6 months), 1y (last year)
@@ -96,19 +97,13 @@ PARALLEL=0
 # valid values: 24, 32, 64
 # if set to 32 or 64 you need to provide an api key
 THUMBS=24
-
-# 收藏数筛选阈值（只下载收藏数≥此值的图片）
-MIN_FAVORITES=200
-# 图片大小限制（500KB ~ 10MB，已转换为字节）
-MIN_FILE_SIZE=$((500 * 1024))    # 500KB
-MAX_FILE_SIZE=$((10 * 1024 * 1024)) # 10MB
 #####################################
 ###   End Configuration Options   ###
 #####################################
 
 function checkDependencies {
     printf "Checking dependencies..."
-    dependencies=(wget jq sed shuf)
+    dependencies=(wget jq sed)
     [[ $PARALLEL == 1 ]] && dependencies+=(parallel)
 
     for name in "${dependencies[@]}"
@@ -149,47 +144,6 @@ function setAPIkeyHeader {
 } # /setAPIkeyHeader
 
 #
-# 检查收藏数是否达标
-# 参数：收藏数
-# 返回：0（达标）/1（不达标）
-#
-function is_favorite_ok {
-    local favorites="$1"
-    # 检查收藏数是否为数字且≥阈值
-    if [[ "$favorites" =~ ^[0-9]+$ ]] && [ "$favorites" -ge "$MIN_FAVORITES" ]; then
-        return 0
-    else
-        return 1
-    fi
-} # /is_favorite_ok
-
-#
-# 检查文件大小是否在合法范围 (500KB ~ 10MB)
-# 参数：文件URL
-# 返回：0（合法）/1（不合法）
-#
-function is_size_valid {
-    local url="$1"
-    # 仅获取响应头，不下载文件，获取Content-Length
-    local size=$(wget --spider --server-response --header="$httpHeader" \
-                      --keep-session-cookies --save-cookies cookies.txt --load-cookies cookies.txt \
-                      "$url" 2>&1 | awk '/Content-Length/ {print $2}' | tr -d '\r\n')
-    
-    # 检查是否获取到有效大小
-    if ! [[ "$size" =~ ^[0-9]+$ ]]; then
-        printf "\\t无法获取文件大小，跳过: %s\\n" "$url" >&2
-        return 1
-    fi
-
-    # 判断大小是否在合法范围
-    if [ "$size" -lt "$MIN_FILE_SIZE" ] || [ "$size" -gt "$MAX_FILE_SIZE" ]; then
-        printf "\\t文件大小不合法（%s 字节，要求：%s~%s 字节），跳过: %s\\n" "$size" "$MIN_FILE_SIZE" "$MAX_FILE_SIZE" "$url" >&2
-        return 1
-    fi
-    return 0
-} # /is_size_valid
-
-#
 # downloads Page with Thumbnails
 #
 function getPage {
@@ -208,124 +162,47 @@ function getPage {
 } # /getPage
 
 #
-# 下载当前页的达标图片，并返回本次成功下载的数量
-# 返回值：本次成功下载的达标图片数（纯数字，无其他输出）
+# downloads all the wallpaper from a wallpaperfile
+# arg1: the file containing the wallpapers
 #
 function downloadWallpapers {
-    local success_count=0  # 记录本次页面成功下载的达标图片数
-
-    # 将调试信息输出到标准错误（stderr），避免混入返回值
-    exec 3>&1  # 保存标准输出(stdout)到文件描述符3
-
     if (( "$page" >= "$(jq -r ".meta.last_page" tmp)" ))
     then
         downloadEndReached=true
-        exec 1>&3 3>&-  # 恢复stdout，关闭文件描述符3
-        echo 0  # 已到最后一页，返回0
-        return
     fi
 
-    # 先清理可能存在的下载临时文件
-    [ -f ./download.txt ] && rm ./download.txt
-
-    # 第一步：收集当前页所有达标（收藏数+大小）的图片索引
-    local eligible_indices=()
     for ((i=0; i<THUMBS; i++))
     do
         imgURL=$(jq -r ".data[$i].path" tmp)
-        favorites=$(jq -r ".data[$i].favorites" tmp)
+
         filename=$(echo "$imgURL"| sed "s/.*\///" )
-
-        # 跳过null URL
-        if [[ "$imgURL" == "null" ]]; then
-            continue
-        fi
-
-        # 检查收藏数是否达标
-        if ! is_favorite_ok "$favorites"; then
-            printf "\\t跳过收藏数不足的图片 (收藏数: %s < %s): %s\\n" "$favorites" "$MIN_FAVORITES" "$imgURL" >&2
-            continue
-        fi
-
-        # 检查文件大小是否合法
-        if ! is_size_valid "$imgURL"; then
-            continue
-        fi
-
-        # 检查是否已下载
-        if grep -w "$filename" downloaded.txt >/dev/null; then
-            printf "\\tWallpaper %s 已下载过!\\n" "$imgURL" >&2
-            continue
-        fi
-
-        # 所有条件达标，加入索引列表
-        eligible_indices+=($i)
-    done
-
-    # 第二步：随机打乱达标索引顺序（实现页面内随机选择）
-    local shuffled_indices=($(printf "%s\n" "${eligible_indices[@]}" | shuf))
-
-    # 第三步：按随机顺序处理图片，直到达到目标数量
-    for i in "${shuffled_indices[@]}"
-    do
-        # 提前判断是否已满足总目标，满足则停止
-        if [ $((total_success + success_count)) -ge $WPNUMBER ]; then
-            break
-        fi
-
-        imgURL=$(jq -r ".data[$i].path" tmp)
-        favorites=$(jq -r ".data[$i].favorites" tmp)
-        filename=$(echo "$imgURL"| sed "s/.*\///" )
-
-        # 并行下载：先写入临时文件，后续统一处理
-        if [ $PARALLEL == 1 ]
+        if grep -w "$filename" downloaded.txt >/dev/null
+        then
+            printf "\\tWallpaper %s already downloaded!\\n" "$imgURL"
+        elif [ $PARALLEL == 1 ]
         then
             echo "$imgURL" >> download.txt
-            success_count=$((success_count+1))
         else
-            # 非并行下载：直接下载并统计成功数
+            # check if downloadWallpaper was successful
             if downloadWallpaper "$imgURL"
             then
                 echo "$filename" >> downloaded.txt
-                success_count=$((success_count+1))
-                # 输出到stderr，不影响函数返回值
-                printf "\\t成功下载达标图片: %s (收藏数: %s)\\n" "$imgURL" "$favorites" >&2
             fi
         fi
     done
 
-    # 处理并行下载，统计实际成功数
     if [ $PARALLEL == 1 ] && [ -f ./download.txt ]
     then
-        # 导出函数和变量供parallel使用
-        export -f WGET coolDown downloadWallpaper LOCATION MIN_FILE_SIZE MAX_FILE_SIZE
-        # 先备份当前下载列表，用于统计成功数
-        cp ./download.txt ./download_tmp.txt
+        # export wget wrapper and download function to make it
+        # available for parallel
+        export -f WGET coolDown downloadWallpaper
         # shellcheck disable=SC2016
         SHELL=$(type -p bash) parallel --gnu --no-notice \
-            'imgURL={} && filename=$(echo "$imgURL"| sed "s/.*\///" ) && if downloadWallpaper $imgURL; then echo "$filename" >> downloaded.txt; fi' < download.txt
-        
-        # 统计并行下载的成功数（对比下载前后的downloaded.txt差异）
-        local pre_download_count=$(wc -l < downloaded.txt | awk '{print $1}')
-        rm ./download.txt
-        mv ./download_tmp.txt ./download.txt
-        SHELL=$(type -p bash) parallel --gnu --no-notice \
-            'imgURL={} && filename=$(echo "$imgURL"| sed "s/.*\///" ) && if downloadWallpaper $imgURL; then echo "$filename" >> downloaded.txt; fi' < download.txt
-        local post_download_count=$(wc -l < downloaded.txt | awk '{print $1}')
-        success_count=$((post_download_count - pre_download_count))
-        
-        rm ./download.txt ./download_tmp.txt
+            'imgURL={} && downloadWallpaper $imgURL && echo "$imgURL"| sed "s/.*\///" >> downloaded.txt' < download.txt
+            rm tmp download.txt
+        else
+            rm tmp
     fi
-
-    # 清理临时文件
-    [ -f ./tmp ] && rm ./tmp
-
-    # 恢复标准输出，关闭临时文件描述符
-    exec 1>&3 3>&-
-
-    # 仅返回纯数字的成功数，无其他输出
-    echo "$success_count"
-    return
 } # /downloadWallpapers
 
 #
@@ -336,9 +213,7 @@ function downloadWallpapers {
 function downloadWallpaper {
     if [[ "$1" != null ]]
     then
-        # 明确指定下载目录为LOCATION，避免文件下载到错误路径
-        WGET -P "$LOCATION" "$1"
-        return $?
+        WGET "$1"
     else
         return 1
     fi
@@ -348,11 +223,9 @@ function downloadWallpaper {
 # Waits for 30 seconds if rate limiting is detected
 #
 function coolDown {
-    # 输出到stderr，不影响函数返回值
-    printf "\\t -检测到速率限制，休眠30秒\\n" >&2
+    printf "\\t -Rate Limiting detected, sleeping for 30 seconds\\n"
     sleep 30
-    # 冷却后重试下载时指定目录
-    WGET -P "$LOCATION" "$@"
+    WGET "$@"
 } # /coolDown
 
 #
@@ -369,12 +242,12 @@ function WGET {
         printf "arg1:\\tfile to download\\n\\n"
         printf "press any key to exit\\n"
         read -r
-        exit 1
+        exit
     fi
 
-    # 保留必要参数，确保认证和会话有效
-    wget -q --header="$httpHeader" --keep-session-cookies \
-         --save-cookies cookies.txt --load-cookies cookies.txt "$@" 2>/dev/null | \
+    # default wget command
+    wget --server-response -q --header="$httpHeader" --keep-session-cookies \
+         --save-cookies cookies.txt --load-cookies cookies.txt "$@" 2>&1 | \
          grep "429 Too Many Requests" >/dev/null && coolDown "$@"
 
     return "${PIPESTATUS[0]}"
@@ -546,107 +419,54 @@ then
     setAPIkeyHeader "$APIKEY"
 fi
 
-# 全局变量初始化：统计总成功下载数
-total_success=0
-downloadEndReached=false
-
 if [ "$TYPE" == standard ]
 then
-    # 初始化随机数生成器，确保每次运行随机序列不同
-    RANDOM=$$
-    
-    # 先获取总页数并限制在1-100页
-    page=1
-    s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
-    s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
-    s1+="&sorting=$MODE&order=$ORDER&topRange=$TOPRANGE&colors=$COLOR"
-    getPage "$s1"
-    total_pages=$(jq -r ".meta.last_page" tmp)
-    # 限制最大页数为100，最小为1
-    if [ "$total_pages" -gt 100 ]; then
-        total_pages=100
-    fi
-    if [ "$total_pages" -lt 1 ]; then
-        total_pages=1
-    fi
-    rm -f tmp
-
-    # 循环：直到总成功数达到WPNUMBER或已无更多页面
-    while [ $total_success -lt $WPNUMBER ] && [ "$downloadEndReached" != true ]
+    for ((  count=0, page="$STARTPAGE";
+            count< "$WPNUMBER";
+            count=count+"$THUMBS", page=page+1 ));
     do
-        # 随机选择1-$total_pages之间的页面（核心：实现1-100页随机选）
-        page=$((RANDOM % total_pages + 1))
-        printf "\\n===== 正在随机获取第 %s 页数据（总范围：1-%d页）=====\\n" "$page" "$total_pages"
-        
+        printf "Download Page %s\\n" "$page"
         s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
         s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
         s1+="&sorting=$MODE&order=$ORDER&topRange=$TOPRANGE&colors=$COLOR"
         getPage "$s1"
-        printf "\\t- 第 %s 页数据获取完成!\\n" "$page"
-
-        printf "正在处理第 %s 页的达标图片\\n" "$page"
-        # 获取本次页面成功下载的数量（纯数字）
-        current_success=$(downloadWallpapers)
-        # 累加总成功数
-        total_success=$((total_success + current_success))
-
-        printf "第 %s 页处理完成：本次成功下载 %s 张达标图片，累计成功下载 %s 张（目标 %s 张）\\n" \
-               "$page" "$current_success" "$total_success" "$WPNUMBER"
+        printf "\\t- done!\\n"
+        printf "Download Wallpapers from Page %s\\n" "$page"
+        downloadWallpapers
+        printf "\\t- done!\\n"
+        if [ "$downloadEndReached" = true ]
+        then
+            break
+        fi
     done
 
 elif [ "$TYPE" == search ] || [ "$TYPE" == useruploads ]
 then
-    # 初始化随机数生成器
-    RANDOM=$$
-    
-    # 先获取总页数并限制在1-100页
-    page=1
-    s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
-    s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
-    s1+="&sorting=$MODE&order=desc&topRange=$TOPRANGE&colors=$COLOR"
-    if [ "$TYPE" == search ]; then
-        s1+="&q=$QUERY"
-    elif [ "$TYPE" == useruploads ]; then
-        s1+="&q=@$USR"
-    fi
-    getPage "$s1"
-    total_pages=$(jq -r ".meta.last_page" tmp)
-    # 限制最大页数为100，最小为1
-    if [ "$total_pages" -gt 100 ]; then
-        total_pages=100
-    fi
-    if [ "$total_pages" -lt 1 ]; then
-        total_pages=1
-    fi
-    rm -f tmp
-
-    # 循环：直到总成功数达到WPNUMBER或已无更多页面
-    while [ $total_success -lt $WPNUMBER ] && [ "$downloadEndReached" != true ]
+    for ((  count=0, page="$STARTPAGE";
+            count< "$WPNUMBER";
+            count=count+"$THUMBS", page=page+1 ));
     do
-        # 随机选择1-$total_pages之间的页面
-        page=$((RANDOM % total_pages + 1))
-        printf "\\n===== 正在随机获取第 %s 页数据（总范围：1-%d页）=====\\n" "$page" "$total_pages"
-        
+        printf "Download Page %s\\n" "$page"
         s1="search?page=$page&categories=$CATEGORIES&purity=$FILTER&"
         s1+="atleast=$ATLEAST&resolutions=$RESOLUTION&ratios=$ASPECTRATIO"
         s1+="&sorting=$MODE&order=desc&topRange=$TOPRANGE&colors=$COLOR"
-        if [ "$TYPE" == search ]; then
+        if [ "$TYPE" == search ]
+        then
             s1+="&q=$QUERY"
-        elif [ "$TYPE" == useruploads ]; then
+        elif [ "$TYPE" == useruploads ]
+        then
             s1+="&q=@$USR"
         fi
 
         getPage "$s1"
-        printf "\\t- 第 %s 页数据获取完成!\\n" "$page"
-
-        printf "正在处理第 %s 页的达标图片\\n" "$page"
-        # 获取本次页面成功下载的数量（纯数字）
-        current_success=$(downloadWallpapers)
-        # 累加总成功数
-        total_success=$((total_success + current_success))
-
-        printf "第 %s 页处理完成：本次成功下载 %s 张达标图片，累计成功下载 %s 张（目标 %s 张）\\n" \
-               "$page" "$current_success" "$total_success" "$WPNUMBER"
+        printf "\\t- done!\\n"
+        printf "Download Wallpapers from Page %s\\n" "$page"
+        downloadWallpapers
+        printf "\\t- done!\\n"
+        if [ "$downloadEndReached" = true ]
+        then
+            break
+        fi
     done
 
 elif [ "$TYPE" == collections ]
@@ -661,6 +481,7 @@ then
     fi
 
     getPage "collections/$USR"
+
 
     i=0
     while
@@ -682,59 +503,19 @@ then
         exit
     fi
 
-    # 初始化随机数生成器
-    RANDOM=$$
-    
-    # 先获取收藏集总页数并限制在1-100页
-    page=1
-    getPage "collections/$USR/$id?page=$page"
-    total_pages=$(jq -r ".meta.last_page" tmp)
-    # 限制最大页数为100，最小为1
-    if [ "$total_pages" -gt 100 ]; then
-        total_pages=100
-    fi
-    if [ "$total_pages" -lt 1 ]; then
-        total_pages=1
-    fi
-    rm -f tmp
-
-    # 循环：直到总成功数达到WPNUMBER、收藏集耗尽或已无更多页面
-    while [ $total_success -lt $WPNUMBER ] && [ $total_success -lt $collectionsize ] && [ "$downloadEndReached" != true ]
+    for ((  count=0, page="$STARTPAGE";
+            count< "$WPNUMBER" && count< "$collectionsize";
+            count=count+"$THUMBS", page=page+1 ));
     do
-        # 随机选择1-$total_pages之间的页面
-        page=$((RANDOM % total_pages + 1))
-        printf "\\n===== 正在随机获取收藏集第 %s 页数据（总范围：1-%d页）=====\\n" "$page" "$total_pages"
-        
+        printf "Download Page %s\\n" "$page"
         getPage "collections/$USR/$id?page=$page"
-        printf "\\t- 收藏集第 %s 页数据获取完成!\\n" "$page"
-
-        printf "正在处理收藏集第 %s 页的达标图片\\n" "$page"
-        # 获取本次页面成功下载的数量（纯数字）
-        current_success=$(downloadWallpapers)
-        # 累加总成功数
-        total_success=$((total_success + current_success))
-
-        printf "收藏集第 %s 页处理完成：本次成功下载 %s 张达标图片，累计成功下载 %s 张（目标 %s 张，收藏集总数 %s 张）\\n" \
-               "$page" "$current_success" "$total_success" "$WPNUMBER" "$collectionsize"
+        printf "\\t- done!\\n"
+        printf "Download Wallpapers from Page %s\\n" "$page"
+        downloadWallpapers
+        printf "\\t- done!\\n"
     done
 else
     printf "error in TYPE please check Variable\\n"
-    exit 1
 fi
 
-# 清理临时文件
-[ -f ./cookies.txt ] && rm ./cookies.txt
-[ -f ./tmp ] && rm ./tmp
-
-# 最终提示
-printf "\\n=====================================\\n"
-if [ $total_success -ge $WPNUMBER ]
-then
-    printf "✅ 任务完成：已成功下载 %s 张达标图片（目标 %s 张）\\n" "$total_success" "$WPNUMBER"
-else
-    printf "⚠️  任务终止：已无更多达标图片，最终成功下载 %s 张达标图片（目标 %s 张）\\n" "$total_success" "$WPNUMBER"
-fi
-printf "📁 图片保存目录：%s\\n" "$LOCATION"
-printf "=====================================\\n"
-
-exit 0
+rm -f cookies.txt
