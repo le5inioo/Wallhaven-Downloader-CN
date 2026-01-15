@@ -13,7 +13,7 @@ REVISION=0.2.6.cn
 #####################################
 # 输入你的 API 密钥
 # 可在此地址获取：https://wallhaven.cc/settings/account
-APIKEY="RyQ3L8mB8gM79Ed589R43NTW5QrDG6pe"
+APIKEY="xxxxxxxxxxxxxxxxxx"
 #####################################
 ###  结束 NSFW内容/个人收藏集所需配置  ###
 #####################################
